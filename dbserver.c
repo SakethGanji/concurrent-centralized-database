@@ -10,6 +10,8 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <pthread.h>
+#include <fcntl.h>
+#include "msg.h"
 
 typedef struct {
     int fd;
@@ -18,14 +20,9 @@ typedef struct {
     int sock_family;
 } client_connection;
 
-
 void Usage(char *progname);
-void PrintOut(int fd, struct sockaddr *addr, size_t addrlen);
-void PrintReverseDNS(struct sockaddr *addr, size_t addrlen);
-void PrintServerSide(int client_fd, int sock_family);
 int Listen(char *portnum, int *sock_family);
 void *HandleClient(void *client_parameters);
-
 int main(int argc, char **argv) {
     // Expect the port number as a command line argument.
     if (argc != 2) {
@@ -70,12 +67,10 @@ int main(int argc, char **argv) {
     close(listen_fd);
     return EXIT_SUCCESS;
 }
-
 void Usage(char *progname) {
     printf("usage: %s port \n", progname);
     exit(EXIT_FAILURE);
 }
-
 int Listen(char *portnum, int *sock_family) {
 
     // Populate the "hints" addrinfo structure for getaddrinfo().
@@ -166,19 +161,15 @@ int Listen(char *portnum, int *sock_family) {
 void *HandleClient(void *client_parameters) {
     client_connection *client_data = (client_connection *)client_parameters;
     int client_fd = client_data->fd;
-    struct sockaddr *addr = &(client_data->addr);
-    size_t addrlen = client_data->addrlen;
-    int sock_family = client_data->sock_family;
 
-    PrintOut(client_fd, addr, addrlen);
-    PrintReverseDNS(addr, addrlen);
-    PrintServerSide(client_fd, sock_family);
+    printf("-- Socket [%d] connected -- \n", client_fd);
 
     while (1) {
-        char clientbuf[1024];
-        ssize_t res = read(client_fd, clientbuf, 1023);
+        struct msg received_msg;
+        ssize_t res = read(client_fd, &received_msg, sizeof(received_msg));
+
         if (res == 0) {
-            printf("[The client disconnected.] \n");
+            printf("-- Disconnected: Socket [%d] --\n", client_fd);
             break;
         }
 
@@ -186,85 +177,64 @@ void *HandleClient(void *client_parameters) {
             if ((errno == EAGAIN) || (errno == EINTR))
                 continue;
 
-            printf(" Error on client socket:%s \n ", strerror(errno));
+            printf("-- Error on client Socket [%d] :%s --\n", client_fd, strerror(errno));
             break;
         }
-        clientbuf[res] = '\0';
-        printf("the client sent: %s \n", clientbuf);
 
-        // Write the received message back to the client
-        write(client_fd, clientbuf, strlen(clientbuf));
+        struct msg response;
+
+        if (received_msg.type == PUT) {
+            printf(":PUT request received:\n");
+            printf("Name: %s\n", received_msg.rd.name);
+            printf("ID: %u\n", received_msg.rd.id);
+            response.type = SUCCESS;
+
+            int32_t db_fd = open("db", O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+            if (db_fd < 0) {
+                perror("Error opening the database file");
+                return NULL;
+            }
+
+            struct record student_record;
+            strcpy(student_record.name, received_msg.rd.name);
+            student_record.id = received_msg.rd.id;
+            lseek(db_fd, sizeof(struct record) * student_record.id, SEEK_SET);
+            write(db_fd, &student_record, sizeof(struct record));
+
+            close(db_fd);
+
+        } else if (received_msg.type == GET) {
+            printf("GET request received:\n");
+            printf("ID: %u\n", received_msg.rd.id);
+            response.type = SUCCESS;
+
+            int32_t db_fd = open("db", O_RDONLY);
+            if (db_fd < 0) {
+                perror("Error opening the database file");
+                return NULL;
+            }
+
+            struct record student_record;
+            int32_t id = received_msg.rd.id;
+            lseek(db_fd, sizeof(struct record) * id, SEEK_SET);
+            read(db_fd, &student_record, sizeof(struct record));
+
+            strcpy(response.rd.name, student_record.name);
+            response.rd.id = student_record.id;
+
+            close(db_fd);
+
+        } else {
+            printf("-- Invalid request received --\n");
+            response.type = FAIL;
+        }
+
+        // Send the response back to the client
+        write(client_fd, &response, sizeof(response));
     }
 
     close(client_fd);
     free(client_data);
 
     return NULL;
-}
-
-void PrintOut(int fd, struct sockaddr *addr, size_t addrlen) {
-    printf("Socket [%d] is bound to: \n", fd);
-    if (addr->sa_family == AF_INET) {
-        // Print out the IPV4 address and port
-
-        char astring[INET_ADDRSTRLEN];
-        struct sockaddr_in *in4 = (struct sockaddr_in *) (addr);
-        inet_ntop(AF_INET, &(in4->sin_addr), astring, INET_ADDRSTRLEN);
-        printf(" IPv4 address %s", astring);
-        printf(" and port %d\n", ntohs(in4->sin_port));
-
-    } else if (addr->sa_family == AF_INET6) {
-        // Print out the IPV6 address and port
-
-        char astring[INET6_ADDRSTRLEN];
-        struct sockaddr_in6 *in6 = (struct sockaddr_in6 *) (addr);
-        inet_ntop(AF_INET6, &(in6->sin6_addr), astring, INET6_ADDRSTRLEN);
-        printf("IPv6 address %s", astring);
-        printf(" and port %d\n", ntohs(in6->sin6_port));
-
-    } else {
-        printf(" ???? address and port ???? \n");
-    }
-}
-
-void PrintReverseDNS(struct sockaddr *addr, size_t addrlen) {
-    char hostname[1024];  // ought to be big enough.
-    if (getnameinfo(addr, addrlen, hostname, 1024, NULL, 0, 0) != 0) {
-        sprintf(hostname, "[reverse DNS failed]");
-    }
-    printf("DNS name: %s \n", hostname);
-}
-
-void PrintServerSide(int client_fd, int sock_family) {
-    char hname[1024];
-    hname[0] = '\0';
-
-    printf("Server side interface is ");
-    if (sock_family == AF_INET) {
-        // The server is using an IPv4 address.
-        struct sockaddr_in srvr;
-        socklen_t srvrlen = sizeof(srvr);
-        char addrbuf[INET_ADDRSTRLEN];
-        getsockname(client_fd, (struct sockaddr *) &srvr, &srvrlen);
-        inet_ntop(AF_INET, &srvr.sin_addr, addrbuf, INET_ADDRSTRLEN);
-        printf("%s", addrbuf);
-        // Get the server's dns name, or return it's IP address as
-        // a substitute if the dns lookup fails.
-        getnameinfo((const struct sockaddr *) &srvr,
-                    srvrlen, hname, 1024, NULL, 0, 0);
-        printf(" [%s]\n", hname);
-    } else {
-        // The server is using an IPv6 address.
-        struct sockaddr_in6 srvr;
-        socklen_t srvrlen = sizeof(srvr);
-        char addrbuf[INET6_ADDRSTRLEN];
-        getsockname(client_fd, (struct sockaddr *) &srvr, &srvrlen);
-        inet_ntop(AF_INET6, &srvr.sin6_addr, addrbuf, INET6_ADDRSTRLEN);
-        printf("%s", addrbuf);
-        // Get the server's dns name, or return it's IP address as
-        // a substitute if the dns lookup fails.
-        getnameinfo((const struct sockaddr *) &srvr,
-                    srvrlen, hname, 1024, NULL, 0, 0);
-        printf(" [%s]\n", hname);
-    }
 }

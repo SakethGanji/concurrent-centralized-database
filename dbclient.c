@@ -8,6 +8,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include "msg.h"
 
 #define BUF 256
 
@@ -38,33 +39,66 @@ int main(int argc, char **argv) {
         Usage(argv[0]);
     }
 
-    char message[1024];
-    printf("Enter your message: ");
-    fgets(message, sizeof(message), stdin);
-    write(socket_fd, message, strlen(message));
+    int choice;
+    struct msg message;
+    struct msg response;
 
-    // Read something from the remote host.
-    // Will only read BUF-1 characters at most.
-    char readbuf[BUF];
-    int res;
     while (1) {
-        res = read(socket_fd, readbuf, BUF - 1);
+        printf("Enter your choice (1 to put, 2 to get, 0 to quit): ");
+        scanf("%d", &choice);
+        getchar(); // consume newline character
+
+        if (choice == 0) {
+            break;
+        } else if (choice == 1) {
+            message.type = PUT;
+            printf("Enter the name: ");
+            fgets(message.rd.name, MAX_NAME_LENGTH, stdin);
+            message.rd.name[strcspn(message.rd.name, "\n")] = 0; // remove newline character
+            printf("Enter the id: ");
+            scanf("%u", &message.rd.id);
+            getchar(); // consume newline character
+        } else if (choice == 2) {
+            message.type = GET;
+            printf("Enter the id: ");
+            scanf("%u", &message.rd.id);
+            getchar(); // consume newline character
+        } else {
+            printf("Invalid choice.\n");
+            continue;
+        }
+
+        write(socket_fd, &message, sizeof(message));
+
+        // Read the response from the remote host.
+        int res = read(socket_fd, &response, sizeof(response));
         if (res == 0) {
             printf("socket closed prematurely \n");
             close(socket_fd);
             return EXIT_FAILURE;
         }
         if (res == -1) {
-            if (errno == EINTR)
+            if (errno == EINTR) {
                 continue;
+            }
             printf("socket read failure \n");
             close(socket_fd);
             return EXIT_FAILURE;
         }
-        readbuf[res] = '\0';
-        printf("%s", readbuf);
-        break;
+
+        if (response.type == SUCCESS) {
+            if (message.type == PUT) {
+                printf("Put success.\n");
+            } else if (message.type == GET) {
+                printf("name: %s\nid: %u\n", response.rd.name, response.rd.id);
+            }
+        } else if (response.type == FAIL) {
+            printf("Operation failed.\n");
+        } else {
+            printf("Invalid response.\n");
+        }
     }
+
 
     // Clean up.
     close(socket_fd);

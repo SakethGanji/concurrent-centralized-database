@@ -1,3 +1,5 @@
+#include <stdint.h>
+
 #define MAX_NAME_LENGTH 128
 
 // Message types
