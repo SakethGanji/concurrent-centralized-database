@@ -8,19 +8,23 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <pthread.h>
+
+typedef struct {
+    int fd;
+    struct sockaddr addr;
+    size_t addrlen;
+    int sock_family;
+} client_connection;
+
 
 void Usage(char *progname);
-
 void PrintOut(int fd, struct sockaddr *addr, size_t addrlen);
-
 void PrintReverseDNS(struct sockaddr *addr, size_t addrlen);
-
 void PrintServerSide(int client_fd, int sock_family);
-
 int Listen(char *portnum, int *sock_family);
-
-void HandleClient(int c_fd, struct sockaddr *addr, size_t addrlen,
-                  int sock_family);
+void *HandleClient(void *client_parameters);
 
 int main(int argc, char **argv) {
     // Expect the port number as a command line argument.
@@ -39,22 +43,27 @@ int main(int argc, char **argv) {
     // Loop forever, accepting a connection from a client and doing
     // an echo trick to it.
     while (1) {
-        struct sockaddr_storage caddr;
-        socklen_t caddr_len = sizeof(caddr);
-        int client_fd = accept(listen_fd,
-                               (struct sockaddr *) (&caddr),
-                               &caddr_len);
+        struct sockaddr_storage client_addr;
+        socklen_t client_addr_len = sizeof(client_addr);
+        int client_fd = accept(listen_fd,(struct sockaddr *) (&client_addr), &client_addr_len);
         if (client_fd < 0) {
-            if ((errno == EINTR) || (errno == EAGAIN) || (errno == EWOULDBLOCK))
+            if ((errno == EINTR) || (errno == EAGAIN) || (errno == EWOULDBLOCK)) {
                 continue;
+            }
             printf("Failure on accept:%s \n ", strerror(errno));
             break;
         }
 
-        HandleClient(client_fd,
-                     (struct sockaddr *) (&caddr),
-                     caddr_len,
-                     sock_family);
+        // Create a new thread to handle the client
+        client_connection *current_client = (client_connection *) malloc(sizeof(client_connection));
+        current_client->fd = client_fd;
+        current_client->addr = *(struct sockaddr *) (&client_addr);
+        current_client->addrlen = client_addr_len;
+        current_client->sock_family = sock_family;
+
+        pthread_t thread_id;
+        pthread_create(&thread_id, NULL, HandleClient, (void *)current_client);
+        pthread_detach(thread_id);
     }
 
     // Close socket
@@ -66,7 +75,6 @@ void Usage(char *progname) {
     printf("usage: %s port \n", progname);
     exit(EXIT_FAILURE);
 }
-
 
 int Listen(char *portnum, int *sock_family) {
 
@@ -155,17 +163,20 @@ int Listen(char *portnum, int *sock_family) {
     return listen_fd;
 }
 
-void HandleClient(int c_fd, struct sockaddr *addr, size_t addrlen,
-             int sock_family) {
-    // Print out information about the client.
-    printf("\nNew client connection \n");
-    PrintOut(c_fd, addr, addrlen);
+void *HandleClient(void *client_parameters) {
+    client_connection *client_data = (client_connection *)client_parameters;
+    int client_fd = client_data->fd;
+    struct sockaddr *addr = &(client_data->addr);
+    size_t addrlen = client_data->addrlen;
+    int sock_family = client_data->sock_family;
+
+    PrintOut(client_fd, addr, addrlen);
     PrintReverseDNS(addr, addrlen);
-    PrintServerSide(c_fd, sock_family);
+    PrintServerSide(client_fd, sock_family);
 
     while (1) {
         char clientbuf[1024];
-        ssize_t res = read(c_fd, clientbuf, 1023);
+        ssize_t res = read(client_fd, clientbuf, 1023);
         if (res == 0) {
             printf("[The client disconnected.] \n");
             break;
@@ -182,10 +193,13 @@ void HandleClient(int c_fd, struct sockaddr *addr, size_t addrlen,
         printf("the client sent: %s \n", clientbuf);
 
         // Write the received message back to the client
-        write(c_fd, clientbuf, strlen(clientbuf));
+        write(client_fd, clientbuf, strlen(clientbuf));
     }
 
-    close(c_fd);
+    close(client_fd);
+    free(client_data);
+
+    return NULL;
 }
 
 void PrintOut(int fd, struct sockaddr *addr, size_t addrlen) {

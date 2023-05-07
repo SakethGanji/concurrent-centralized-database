@@ -12,15 +12,8 @@
 #define BUF 256
 
 void Usage(char *progname);
-
-int LookupName(char *name,
-               unsigned short port,
-               struct sockaddr_storage *ret_addr,
-               size_t *ret_addrlen);
-
-int Connect(const struct sockaddr_storage *addr,
-            const size_t addrlen,
-            int *ret_fd);
+int LookupName(char *name, unsigned short port, struct sockaddr_storage *ret_addr, size_t *ret_addrlen);
+int Connect(const struct sockaddr_storage *addr, const size_t addrlen, int *ret_fd);
 
 int main(int argc, char **argv) {
     if (argc != 3) {
@@ -83,10 +76,7 @@ void Usage(char *progname) {
     exit(EXIT_FAILURE);
 }
 
-int LookupName(char *name,
-           unsigned short port,
-           struct sockaddr_storage *ret_addr,
-           size_t *ret_addrlen) {
+int LookupName(char *name, unsigned short port, struct sockaddr_storage *ret_addr, size_t *ret_addrlen) {
     struct addrinfo hints, *results;
     int retval;
 
@@ -125,9 +115,7 @@ int LookupName(char *name,
     return 1;
 }
 
-int Connect(const struct sockaddr_storage *addr,
-        const size_t addrlen,
-        int *ret_fd) {
+int Connect(const struct sockaddr_storage *addr, const size_t addrlen, int *ret_fd) {
     // Create the socket.
     int socket_fd = socket(addr->ss_family, SOCK_STREAM, 0);
     if (socket_fd == -1) {

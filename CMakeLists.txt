@@ -6,6 +6,6 @@ set(CMAKE_C_STANDARD 11)
 include_directories(.)
 
 add_executable(concurrent_centralized_database
-        client.c
+        dbclient.c
         msg.h
-        server.c)
+        dbserver.c)
