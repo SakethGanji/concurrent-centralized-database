@@ -11,18 +11,13 @@
 #include <pthread.h>
 #include <pthread.h>
 #include <fcntl.h>
-#include "msg.h"
 
-typedef struct {
-    int fd;
-    struct sockaddr addr;
-    size_t addrlen;
-    int sock_family;
-} client_connection;
+#include "msg.h"
 
 void Usage(char *progname);
 int Listen(char *portnum, int *sock_family);
-void *HandleClient(void *client_parameters);
+void *HandleClient(void *client_fd_param);
+
 int main(int argc, char **argv) {
     // Expect the port number as a command line argument.
     if (argc != 2) {
@@ -52,14 +47,9 @@ int main(int argc, char **argv) {
         }
 
         // Create a new thread to handle the client
-        client_connection *current_client = (client_connection *) malloc(sizeof(client_connection));
-        current_client->fd = client_fd;
-        current_client->addr = *(struct sockaddr *) (&client_addr);
-        current_client->addrlen = client_addr_len;
-        current_client->sock_family = sock_family;
 
         pthread_t thread_id;
-        pthread_create(&thread_id, NULL, HandleClient, (void *)current_client);
+        pthread_create(&thread_id, NULL, HandleClient, (void *)(intptr_t)client_fd);
         pthread_detach(thread_id);
     }
 
@@ -67,6 +57,7 @@ int main(int argc, char **argv) {
     close(listen_fd);
     return EXIT_SUCCESS;
 }
+
 void Usage(char *progname) {
     printf("usage: %s port \n", progname);
     exit(EXIT_FAILURE);
@@ -158,9 +149,8 @@ int Listen(char *portnum, int *sock_family) {
     return listen_fd;
 }
 
-void *HandleClient(void *client_parameters) {
-    client_connection *client_data = (client_connection *)client_parameters;
-    int client_fd = client_data->fd;
+void *HandleClient(void *client_fd_param) {
+    int client_fd = (int)(intptr_t)client_fd_param;
 
     printf("-- Socket [%d] connected -- \n", client_fd);
 
@@ -184,29 +174,36 @@ void *HandleClient(void *client_parameters) {
         struct msg response;
 
         if (received_msg.type == PUT) {
-            printf(":PUT request received:\n");
+            printf("PUT request received:\n");
             printf("Name: %s\n", received_msg.rd.name);
             printf("ID: %u\n", received_msg.rd.id);
-            response.type = SUCCESS;
 
-            int32_t db_fd = open("db", O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+            int32_t db_fd = open("db", O_RDWR | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR);
             if (db_fd < 0) {
                 perror("Error opening the database file");
                 return NULL;
             }
 
-            struct record student_record;
-            strcpy(student_record.name, received_msg.rd.name);
-            student_record.id = received_msg.rd.id;
-            lseek(db_fd, sizeof(struct record) * student_record.id, SEEK_SET);
-            write(db_fd, &student_record, sizeof(struct record));
+            response.type = SUCCESS;
+            lseek(db_fd, 0, SEEK_END); // to the end of the file
+            write(db_fd, &received_msg.rd, sizeof(struct record));
 
             close(db_fd);
 
-        } else if (received_msg.type == GET) {
+        }
+        else if (received_msg.type == GET) {
             printf("GET request received:\n");
             printf("ID: %u\n", received_msg.rd.id);
             response.type = SUCCESS;
+
+            // Check if the database file exists
+            if (access("db", F_OK) != 0) {
+                // File does not exist, send FAIL response
+                printf("Database file does not exist.\n");
+                response.type = FAIL;
+                write(client_fd, &response, sizeof(response));
+                continue;
+            }
 
             int32_t db_fd = open("db", O_RDONLY);
             if (db_fd < 0) {
@@ -215,16 +212,26 @@ void *HandleClient(void *client_parameters) {
             }
 
             struct record student_record;
-            int32_t id = received_msg.rd.id;
-            lseek(db_fd, sizeof(struct record) * id, SEEK_SET);
-            read(db_fd, &student_record, sizeof(struct record));
+            int found = 0;
+            while (read(db_fd, &student_record, sizeof(struct record)) > 0) {
+                if (student_record.id == received_msg.rd.id) {
+                    found = 1;
+                    break;
+                }
+            }
 
-            strcpy(response.rd.name, student_record.name);
-            response.rd.id = student_record.id;
+            if (found) {
+                response.type = SUCCESS;
+                response.rd = student_record;
+            }
+            else {
+                response.type = FAIL;
+            }
 
             close(db_fd);
 
-        } else {
+        }
+        else {
             printf("-- Invalid request received --\n");
             response.type = FAIL;
         }
@@ -234,7 +241,5 @@ void *HandleClient(void *client_parameters) {
     }
 
     close(client_fd);
-    free(client_data);
-
     return NULL;
 }
