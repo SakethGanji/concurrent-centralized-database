@@ -7,15 +7,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <sys/types.h>
 
 #include "msg.h"
-
-#define BUF 256
 
 void Usage(char *progname);
 int LookupName(char *name, unsigned short port, struct sockaddr_storage *ret_addr, size_t *ret_addrlen);
 int Connect(const struct sockaddr_storage *addr, const size_t addrlen, int *ret_fd);
+void process_user_input(int *choice, struct msg *message);
+void handle_server_response(struct msg *message, struct msg *response);
 
 int main(int argc, char **argv) {
     if (argc != 3) {
@@ -45,34 +44,26 @@ int main(int argc, char **argv) {
     struct msg response;
 
     while (1) {
-        printf("Enter your choice (1 to put, 2 to get, 0 to quit): ");
-        scanf("%d", &choice);
-        getchar(); // consume newline character
-
-        if (choice == 0) {
+        process_user_input(&choice, &message);
+        if (choice != PUT && choice != GET) {
             break;
-        } else if (choice == 1) {
-            message.type = PUT;
-            printf("Enter the name: ");
-            fgets(message.rd.name, MAX_NAME_LENGTH, stdin);
-            message.rd.name[strcspn(message.rd.name, "\n")] = 0; // remove newline character
-            printf("Enter the id: ");
-            scanf("%u", &message.rd.id);
-            getchar(); // consume newline character
-        } else if (choice == 2) {
-            message.type = GET;
-            printf("Enter the id: ");
-            scanf("%u", &message.rd.id);
-            getchar(); // consume newline character
-        } else {
-            printf("Invalid choice.\n");
-            continue;
         }
 
-        write(socket_fd, &message, sizeof(message));
+        // Send the message to the remote host.
+        ssize_t req = write(socket_fd, &message, sizeof(message));
+        if (req == -1) {
+            perror("client write");
+            close(socket_fd);
+            return EXIT_FAILURE;
+        }
+        else if (req < sizeof(message)) {
+            fprintf(stderr, "partial/failed write\n");
+            close(socket_fd);
+            return EXIT_FAILURE;
+        }
 
         // Read the response from the remote host.
-        int res = read(socket_fd, &response, sizeof(response));
+        ssize_t res = read(socket_fd, &response, sizeof(response));
         if (res == 0) {
             printf("socket closed prematurely \n");
             close(socket_fd);
@@ -87,23 +78,99 @@ int main(int argc, char **argv) {
             return EXIT_FAILURE;
         }
 
-        if (response.type == SUCCESS) {
-            if (message.type == PUT) {
-                printf("Put success.\n");
-            } else if (message.type == GET) {
-                printf("name: %s\nid: %u\n", response.rd.name, response.rd.id);
-            }
-        } else if (response.type == FAIL) {
-            printf("Operation failed.\n");
-        } else {
-            printf("Invalid response.\n");
-        }
+        handle_server_response(&message, &response);
     }
-
 
     // Clean up.
     close(socket_fd);
     return EXIT_SUCCESS;
+}
+
+void get_name(struct msg *message) {
+    int valid_input = 0;
+
+    while (!valid_input) {
+        printf("Enter the name: ");
+        if (fgets(message->rd.name, MAX_NAME_LENGTH, stdin) == NULL) {
+            printf("Error: input string is NULL\n");
+            continue;
+        }
+        message->rd.name[strcspn(message->rd.name, "\n")] = 0;
+
+        if (strlen(message->rd.name) == 0) {
+            printf("Name cannot be empty\n");
+        } else {
+            valid_input = 1;
+        }
+    }
+}
+
+void get_id(struct msg *message) {
+    char input[256];
+    char *endptr;
+    int valid_input = 0;
+
+    while (!valid_input) {
+        printf("Enter the id: ");
+        if (fgets(input, sizeof(input), stdin) == NULL) {
+            printf("Error: input string is NULL\n");
+            continue;
+        }
+
+        if (input[0] == '\n') {
+            printf("ID must not be empty\n");
+            continue;
+        }
+
+        message->rd.id = strtol(input, &endptr, 10);
+
+        if (endptr == input || *endptr != '\n') {
+            printf("ID must be a number\n");
+        } else {
+            valid_input = 1;
+        }
+    }
+}
+
+void process_user_input(int* choice, struct msg *message) {
+    printf("Enter your choice (1 to put, 2 to get, 0 to quit): ");
+    scanf("%d", choice);
+    getchar();
+
+    switch (*choice) {
+        case 1:
+            message->type = PUT;
+            get_name(message);
+            get_id(message);
+            break;
+        case 2:
+            message->type = GET;
+            get_id(message);
+            break;
+        default:
+            return;
+    }
+}
+
+void handle_server_response(struct msg *message, struct msg *response) {
+    if (response->type == SUCCESS) {
+        switch (message->type) {
+            case PUT:
+                printf("Put success.\n");
+                break;
+            case GET:
+                printf("name: %s\nid: %u\n", response->rd.name, response->rd.id);
+                break;
+            default:
+                printf("Invalid request.\n");
+        }
+    }
+    else if (response->type == FAIL) {
+        printf("Operation failed\n");
+    }
+    else {
+        printf("Invalid response\n");
+    }
 }
 
 void Usage(char *progname) {
